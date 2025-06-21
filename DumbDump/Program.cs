@@ -1,121 +1,147 @@
-﻿#region Input parameters reading
+﻿using DumbDump;
+using DumbDump.Parsers;
 
-Console.Write(
-
-@"What's file name in '..\input' directory?
-- Accepted extensions: .txt or .sql (example: copy-from-query-window.txt)
-- Any string or empty if only one file there
-> ");
-
-var fileName = Console.ReadLine();
-
-Console.Write(
-@"
-Target database name
-> ");
-
-var databaseName = Console.ReadLine();
-
-Console.Write(
-@"
-INSERT count for one GO stetament?
-- integer, greater than 0
-> ");
-
-var go_freq = int.Parse(Console.ReadLine()!);
-
-#endregion
-
-
-var inputDirectoryPath = "..\\..\\..\\input";
-var files = Directory.GetFiles(inputDirectoryPath);
-if (files.Length == 1)
-    fileName = files[0].Split('\\').Last();
-
-using var reader = File.OpenText(Path.Combine(inputDirectoryPath, fileName!));
-using var writer = new StreamWriter(Path.Combine("..\\..\\..\\output", $"output-dump-{DateTime.Now:yyyy-MM-dd}_{go_freq}inserts.sql"));
-
-var currentLine = reader.ReadLine();
-
-// Line #1, replace Database and write: USE [DatabaseName]
-writer.WriteLine(currentLine!.Replace("FilterPlanningSystem", databaseName)); 
-
-// Line #2: send package
-writer.WriteLine("GO");
-
-// Cleaning after previous applied dump
-writer.WriteLine(
-$@"
-DELETE FROM [dbo].[Schedules];
-DROP TABLE IF EXISTS [external].[Prod_LinesDowntimes];
-DROP TABLE IF EXISTS [external].[Prod_OutputDataForKdfExcel];
-DROP TABLE IF EXISTS [external].[Prod_ProductionPlanForKdfExcel];
-DROP TABLE IF EXISTS [external].[Prod_LOCATION_INVENTORY_];
-DROP TABLE IF EXISTS [external].[Prod_FDC_Free_trays];
-DROP TABLE IF EXISTS [external].[Prod_FDC_Stock];
-IF(NOT EXISTS(SELECT * FROM sys.schemas WHERE name = 'external'))
-BEGIN
-    EXEC('CREATE SCHEMA [external] AUTHORIZATION [dbo]')
-END");
-
-// dbo_name / external_name
-var dumpedInternalTables = new Dictionary<string, string>() {
-    { "Internal_Schedules", "Schedules" }
-};
-
-bool iteratingOverInternalTableSchema = false;
-bool firstInsertFounded = false;
-var insert_counter = 0;
-
-while (null != (currentLine = reader.ReadLine()))
+class Program
 {
-    #region Internal table schemas
-    if (dumpedInternalTables.Any(tableName => currentLine.Contains($"Object:  Table [dump].[{tableName.Key}]")))
+    static void Main()
     {
-        iteratingOverInternalTableSchema = true;
-        continue;
-    }
-    else if (iteratingOverInternalTableSchema && (currentLine.StartsWith("INSERT ") || currentLine.StartsWith("/****** Object: ")))
-        iteratingOverInternalTableSchema = false;
-    else if (iteratingOverInternalTableSchema)
-        continue;
-    #endregion
-    
-    var newTableName = dumpedInternalTables.FirstOrDefault(tableName => currentLine.Contains($"INSERT [dump].[{tableName.Key}]"));
+        var parseType = ParseTypeInit();
+        var fileName = FileNameInit();
+        var databaseName = DatabaseNameInit();
+        var goCommandFrequency = GoCommandFrequencyInit(parseType);
 
-    if (!newTableName.Equals(default(KeyValuePair<string, string>)))
-    {
-        currentLine = currentLine
-            .Replace("[dump]", "[dbo]")
-            .Replace($".[{newTableName.Key}]", $".[{newTableName.Value}]");
-    }
-    else
-    {
-        currentLine = currentLine
-            .Replace("[dump]", "[external]");
+        using BaseParser parser = parseType switch
+        {
+            ParserType.ExternalIntegrationTables => new ExternalIntegrationTablesParser(fileName, databaseName, goCommandFrequency),
+            ParserType.AnyInternalData => new AnyInternalDataParser(fileName, databaseName, goCommandFrequency),
+            _ => throw new NotImplementedException(),
+        };
+
+        parser.Parse();
     }
 
-    if (!firstInsertFounded) // CREATE TABLES
+    private static ParserType ParseTypeInit()
     {
-        if (currentLine.StartsWith("INSERT "))
+        Console.WriteLine(
+@$"1. What's we are parsing? 
+- Parser types:
+{nameof(ParserType.ExternalIntegrationTables)}: {(int)ParserType.ExternalIntegrationTables}
+{nameof(ParserType.AnyInternalData)}:           {(int)ParserType.AnyInternalData}");
+
+    ParseTypeInit:
+        Console.Write("> ");
+
+        var parsingType = ReadLine();
+
+        if (ushort.TryParse(parsingType, out ushort result))
         {
-            firstInsertFounded = true;
-            insert_counter++;
+            var parsingTypeResult = Enum.GetValues<ParserType>().SingleOrDefault(x => (int)x == result);
+
+            if (parsingTypeResult == default)
+            {
+                InputError("Provide a digit from list above");
+                goto ParseTypeInit;
+            }
+
+            Console.WriteLine();
+
+            return parsingTypeResult;
+        }
+        else
+        {
+            InputError("Provide a digit from list above");
+            goto ParseTypeInit;
+        }
+    }
+
+    private static string FileNameInit()
+    {
+        Console.WriteLine(
+@"2. What's file name in '..\input' directory?
+- Accepted extensions: .txt or .sql (example: copy-from-query-window.txt)
+- Any string or empty if only one file there");
+
+    FileNameInit:
+        Console.Write("> ");
+        
+        var fileName = ReadLine();
+
+        var fileNames = Directory.GetFiles(BaseParser.inputDirectoryPath).Select(x => x.Split('\\').Last()).ToList();
+        if (string.IsNullOrEmpty(fileName) && fileNames.Count != 1)
+        {
+            InputError("More than 1 file in 'input' directory, specify file name directly or clean 'input' directory'");
+            goto FileNameInit;
+        }
+        else if (!string.IsNullOrEmpty(fileName) && !fileNames.Contains(fileName))
+        {
+            InputError("No file with such name in 'input' directory'");
+            goto FileNameInit;
+        }
+        else if (string.IsNullOrEmpty(fileName) && fileNames.Count == 1)
+            fileName = fileNames[0];
+
+        Console.WriteLine();
+
+        return fileName!;
+    }
+
+    private static string DatabaseNameInit()
+    {
+        Console.WriteLine("3. Target database name?");
+
+    DatabaseNameInit:
+        Console.Write("> ");
+
+        var databaseName = ReadLine();
+        if (string.IsNullOrEmpty(databaseName))
+        {
+            InputError("Database name can not be empty");
+            goto DatabaseNameInit;
         }
 
-        writer.WriteLine(currentLine);
+        Console.WriteLine();
+
+        return databaseName!;
     }
-    else // INSERTS
+
+    private static int GoCommandFrequencyInit(ParserType parserType)
     {
-        if (currentLine.StartsWith("INSERT "))
+        var defaultGoCommandFrequency = parserType switch
         {
-            writer.WriteLine(currentLine);
-            insert_counter++;
-        }
-        else if (currentLine.StartsWith("GO") && insert_counter == go_freq)
+            ParserType.ExternalIntegrationTables => 1000,
+            ParserType.AnyInternalData => int.MaxValue,
+            _ => throw new NotImplementedException(),
+        };
+
+        Console.WriteLine(
+$@"4. INSERT count for one GO command?
+- integer, greater than 0
+- default value for ParserType = {parserType} is {defaultGoCommandFrequency}");
+
+    GoCommandFrequencyInit:
+        Console.Write("> ");
+
+        var input = ReadLine();
+        if (string.IsNullOrEmpty(input))
+            input = defaultGoCommandFrequency.ToString();
+        if (!int.TryParse(input, out int value))
         {
-            writer.WriteLine(currentLine);
-            insert_counter = 0;
+            InputError("Provide a digit");
+            goto GoCommandFrequencyInit;
         }
+
+        Console.WriteLine();
+
+        return value;
+    }
+
+    private static string? ReadLine()
+    {
+        return Console.ReadLine()?.Trim();
+    }
+
+    private static void InputError(string errorDetails)
+    {
+        Console.Error.WriteLine($"\n{errorDetails}.");
     }
 }
