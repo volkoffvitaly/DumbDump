@@ -10,7 +10,6 @@ public class ExternalIntegrationTablesParser(string fileName, string databaseNam
         BEGIN TRAN;
 
         DELETE FROM [dbo].[Schedules];
-        DROP TABLE IF EXISTS [external].[Internal_Schedules]
 
         DROP TABLE IF EXISTS [external].[Prod_LinesDowntimes];
         DROP TABLE IF EXISTS [external].[Prod_OutputDataForKdfExcel];
@@ -71,7 +70,13 @@ public class ExternalIntegrationTablesParser(string fileName, string databaseNam
 
     private void ChangeSchemaAndTableName(bool isDataStarted)
     {
-        if (isDataStarted && TryFindInternalTableNameOccurrence(out string? sourceTableName, out string? targetTableName))
+        var isInternalTableFound = TryFindInternalTableNameOccurrence(out string? sourceTableName, out string? targetTableName);
+
+        if (!isDataStarted && isInternalTableFound)
+        {
+            while (!(StreamReaderCurrentLine = StreamReader.ReadLine()!).Contains("/****** Object:")) { }
+        }
+        else if (isDataStarted && isInternalTableFound)
         {
             StreamReaderCurrentLine = StreamReaderCurrentLine!
                 .Replace($"[{ParserConstants.DumpSchemeName}]", $"[{ParserConstants.DboSchemeName}]")
